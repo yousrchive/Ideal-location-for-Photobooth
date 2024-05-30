@@ -41,7 +41,6 @@
 ## 📄 모델 설계서
   ### 데이터
 
-데이터셋은 총 5가지를 사용했다.
 1) 서울시 가구 특성정보 - 소득정보
 2) 소상공인시장진흥공단_상가(상권)정보
 3) 한국대학및전문대학정보표준데이터 & 전국초중등학교위치표준데이터
@@ -54,8 +53,173 @@
 
 <img width="656" alt="스크린샷 2024-05-30 오후 3 07 56" src="https://github.com/yousrchive/Ideal-location-for-Photobooth/assets/147587058/eb10a521-89da-4386-b4ac-48ef02cc81b3">
 
+```
+import random
+import csv
 
-##### 모델 학습 및 추론 결과
+def get_random_location_within_seoul():
+    # 서울 내의 경도, 위도 범위
+    min_lat, max_lat = 37.4264, 37.6922
+    min_lng, max_lng = 126.7645, 127.1833
+
+    # 무작위 지점 좌표 생성
+    random_locations = []
+    for _ in range(1000):
+        random_lat = random.uniform(min_lat, max_lat)
+        random_lng = random.uniform(min_lng, max_lng)
+        random_locations.append((random_lat, random_lng))
+
+    return random_locations
+
+def save_to_csv(data, filename):
+    with open(filename, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(['latitude', 'longitude'])
+        writer.writerows(data)
+
+# 서울 내의 무작위 지점 1000개의 위도와 경도 좌표 가져오기
+random_locations_seoul = get_random_location_within_seoul()
+
+# CSV 파일로 저장
+save_to_csv(random_locations_seoul, 'sampling.csv')
+
+#학교 술집 노래방 개수 검색
+
+import requests
+import csv
+
+def get_total_count(keyword, longitude, latitude, radius, format_type):
+    url = "https://dapi.kakao.com/v2/local/search/keyword.{}"
+    headers = {"Authorization": "KakaoAK {}".format(REST_API_KEY)}
+    params = {
+        "query": keyword,
+        "x": longitude,
+        "y": latitude,
+        "radius": radius
+    }a
+    response = requests.get(url.format(format_type), params=params, headers=headers)
+    data = response.json()
+    if 'meta' in data and data['meta']['total_count'] > 0:
+        return data['meta']['total_count']
+    else:
+        return 0
+
+def search_and_save_results(locations, filename):
+    with open(filename, mode='w', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file)
+        writer.writerow(['latitude', 'longitude', 'school_count', 'alc_count', 'sing_count'])
+
+        for latitude, longitude in locations:
+            school_count = get_total_count("학교", longitude, latitude, 500, 'json')
+            alc_count = get_total_count("술집", longitude, latitude, 500, 'json')
+            sing_count = get_total_count("노래방", longitude, latitude, 500, 'json')
+
+            writer.writerow([latitude, longitude, school_count, alc_count, sing_count])
+
+# 저장된 무작위 좌표 읽기
+def read_random_locations_from_csv(filename):
+    random_locations = []
+    with open(filename, mode='r', encoding='utf-8') as file:
+        reader = csv.reader(file)
+        next(reader)  # 헤더 스킵
+        for row in reader:
+            latitude, longitude = float(row[0]), float(row[1])
+            random_locations.append((latitude, longitude))
+    return random_locations
+
+# API 키
+REST_API_KEY = "2f55e6eb59d65a3dbf95fa448046683d"
+
+# CSV 파일에서 무작위 좌표 읽기
+random_locations = read_random_locations_from_csv("sampling.csv")
+
+# 검색하고 결과 저장
+search_and_save_results(random_locations, "search_results.csv")
+
+# search_results.csv: 검색 결과가 저장된 파일 읽기
+search_results_df = pd.read_csv("search_results.csv")
+photobooth_df = pd.read_csv(urls['photobooth_df'])
+
+# 반경 500m 이내의 포토부스 개수 계산
+photobooth_counts = []
+for i, row in search_results_df.iterrows():
+    latitude, longitude = row['latitude'], row['longitude']
+    # 반경 500m 이내에 있는 포토부스 개수 계산
+    count = photobooth_df[
+        (photobooth_df['위도'] - latitude) ** 2 + (photobooth_df['경도'] - longitude) ** 2 <= 0.000005
+    ].shape[0]
+    photobooth_counts.append(count)
+
+# 결과를 DataFrame에 추가
+search_results_df['photobooth'] = photobooth_counts
+
+# 결과 저장
+search_results_df.to_csv("search_results_with_photobooth.csv", index=False)
+```
+
+### 모델 학습 및 추론 결과
+
+#### 모델학습
+```
+from sklearn.model_selection import cross_val_score, KFold
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+
+# 데이터 불러오기
+data = pd.read_csv('search_results_with_photobooth.csv')
+
+# 입력 변수와 타겟 변수 분리
+X = data[['school_count', 'alc_count', 'sing_count']]
+y = data['photobooth']
+
+# k-fold 교차 검증
+k_fold = KFold(n_splits=5, shuffle=True, random_state=42)
+
+# 선형 회귀 모델 생성
+model = LinearRegression()
+
+# 교차 검증 수행 및 모델 학습
+mse_scores = []
+mae_scores = []
+r2_scores = []
+rmse_scores = []
+corr_scores = []
+for train_idx, test_idx in k_fold.split(X):
+    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+    model.fit(X_train, y_train)
+    mse_score = mean_squared_error(y_test, model.predict(X_test))
+    mae_score = mean_absolute_error(y_test, model.predict(X_test))
+    r2_score = model.score(X_test, y_test)
+    mse_scores.append(mse_score)
+    mae_scores.append(mae_score)
+    r2_scores.append(r2_score)
+    rmse_score = np.sqrt(mean_squared_error(y_test, model.predict(X_test)))
+    corr_score = np.corrcoef(y_test, model.predict(X_test))[0, 1]
+    rmse_scores.append(rmse_score)
+    corr_scores.append(corr_score)
+
+# 교차 검증 결과 출력
+print("Mean Squared Error:", np.mean(mse_scores))
+print("RMSE:", np.mean(rmse_scores))
+print("Mean Absolute Error:", np.mean(mae_scores))
+print("R-squared:", np.mean(r2_scores))
+print("Correlation Coefficient:", np.mean(corr_scores))
+
+#다중공선성 확인
+
+def calculate_vif(X):
+    vif_data = pd.DataFrame()
+    vif_data["feature"] = X.columns
+    vif_data["VIF"] = [variance_inflation_factor(X.values, i) for i in range(len(X.columns))]
+    return vif_data
+
+# 입력 변수의 VIF 계산
+vif_scores = calculate_vif(X)
+print(vif_scores)
+```
+#### 추론 결과
 <img width="220" alt="스크린샷 2024-05-30 오후 3 08 13" src="https://github.com/yousrchive/Ideal-location-for-Photobooth/assets/147587058/6045e4d0-7a9a-4a4f-b0ef-44211bb23560">
 
 input을 정확한 주소, 혹은 키워드로 입력해도 kakao api 기준 피쳐(현재 술집, 노래방)를 통해 주요 상권을 분석, 예상 포토부스 개수와 실제 포토부스 개수가 나옵니다.
@@ -77,6 +241,103 @@ if ( 예상 포토부스 개수 > 실제 포토부스 개수) = 추가 포토부
 
 <img width="599" alt="스크린샷 2024-05-30 오후 3 11 55" src="https://github.com/yousrchive/Ideal-location-for-Photobooth/assets/147587058/02bb0236-f9d5-4902-bb63-b6c7117a6c75">
 
+```
+import requests
+import pandas as pd
+import joblib
+
+REST_API_KEY = "secret"
+
+def get_coordinates(keyword):
+    url = "https://dapi.kakao.com/v2/local/search/keyword"
+    headers = {"Authorization": "KakaoAK {}".format(REST_API_KEY)}
+    params = {"query": keyword}
+    response = requests.get(url, params=params, headers=headers)
+    data = response.json()
+    if 'documents' in data and data['documents']:
+        # 검색 결과 중 첫 번째 항목의 좌표를 반환
+        latitude = data['documents'][0]['y']
+        longitude = data['documents'][0]['x']
+        return latitude, longitude
+    else:
+        print("검색 결과를 찾을 수 없습니다.")
+        return None, None
+
+def get_nearby_place_count(latitude, longitude, keyword):
+    url = "https://dapi.kakao.com/v2/local/search/keyword"
+    headers = {"Authorization": "KakaoAK {}".format(REST_API_KEY)}
+    params = {
+        "query": keyword,
+        "x": longitude,
+        "y": latitude,
+        "radius": 500
+    }
+    response = requests.get(url, params=params, headers=headers)
+    data = response.json()
+    if 'meta' in data and data['meta']['total_count'] > 0:
+        return data['meta']['total_count']
+    else:
+        return 0
+
+# 사용자로부터 키워드 입력 받기
+keyword = input("장소에 관한 키워드를 입력하세요: ")
+
+# 키워드를 이용하여 좌표 검색
+latitude, longitude = get_coordinates(keyword)
+if latitude is not None and longitude is not None:
+    # 좌표를 이용하여 반경 500m 이내의 "학교", "술집", "노래방"의 개수 검색
+    places = ["학교", "술집", "노래방"]
+    place_counts = {}
+    for place in places:
+        count = get_nearby_place_count(latitude, longitude, place)
+        place_counts[place] = count
+
+    # 검색 결과 출력
+    print("검색한 장소:", keyword)
+    print(f"좌표: (위도: {latitude}, 경도: {longitude})")
+    print("반경 500m 이내의 장소 개수")
+    for place, count in place_counts.items():
+        print(f"{place}: {count}")
+    search_results = {
+        "school_count": [place_counts.get("학교", 0)],
+        "alc_count": [place_counts.get("술집", 0)],
+        "sing_count": [place_counts.get("노래방", 0)],
+    }
+    search_df = pd.DataFrame(search_results)
+
+else:
+    print("검색 결과를 찾을 수 없습니다.")
+
+# 모델 다운로드 함수 정의
+def download_model(url, save_path):
+    response = requests.get(url)
+    with open(save_path, 'wb') as f:
+        f.write(response.content)
+
+# 모델 다운로드
+model_url = "https://github.com/DartB-2024-1st-Toy-Project/Photobooth/raw/main/server/save.pkl"
+model_save_path = "save.pkl"  # 저장할 파일 이름
+download_model(model_url, model_save_path)
+
+# 모델 불러오기
+model = joblib.load(model_save_path)
+
+# 모델에 입력하여 결과 예측
+predicted_photobooth_count = model.predict(search_df)
+
+# 결과 출력
+print("예상 포토부스 개수:", predicted_photobooth_count[0])
+
+# 실제 포토부스 개수 검색
+photobooth_df = pd.read_csv(urls['photobooth_df'])
+latitude = float(latitude)
+longitude = float(longitude)
+
+count = photobooth_df[
+    ((photobooth_df['위도'] - latitude) ** 2 + (photobooth_df['경도'] - longitude) ** 2) <= 0.000005
+].shape[0]
+print("실제 포토부스 개수:", count)
+```
 
 ## 🌐 API 설계서
 
@@ -114,23 +375,19 @@ if ( 예상 포토부스 개수 > 실제 포토부스 개수) = 추가 포토부
 
 ### 3. 서울시 상권분석서비스(소득소비-상권배후지)
 
-- **항목**: 챗봇 데이터
-- **칼럼**: 이름, 주소, 조회, 상세설명, 이용안내, 임베딩, 태그임베딩
-- **갯수**: 1487
+- **항목**: 서울시 상권분석서비스(추정매출-자치구)
+- **칼럼**: 
+- **갯수**: 
 - **데이터타입**:
-  - 이름, 주소, 이용안내, 상세설명: object
-  - 조회: float
-  - 임베딩, 태그임베딩: array
 
-### 4. 이미지 추천 데이터
 
-- **항목**: 이미지 추천 데이터
-- **칼럼**: 이름, 이미지URL, 이미지임베딩, 관광지간 유사도
-- **갯수**: 1472
+### 4. 서울시 상권분석서비스(추정매출-자치구)
+
+- **항목**: 서울시 상권분석서비스(추정매출-자치구)
+- **칼럼**: 
+- **갯수**: 
 - **데이터타입**:
-  - 이름, 이미지URL: object
-  - 이미지임베딩: array
-  - 관광지간 유사도: object
+
 
 ### 5. 관광지별 추천 데이터
 
